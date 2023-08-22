@@ -19,21 +19,28 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "lwip.h"
-#include "lwip/init.h"
-#include "lwip/netif.h"
-#include "lwip/tcp.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "lwip/init.h"
+#include "lwip/netif.h"
+#include "lwip/tcp.h"
 
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 #define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
-#define MAX_LINE_LENGTH 256
-char line_buffer[MAX_LINE_LENGTH];
+#define buffer_length 256
+char line_buffer[buffer_length];
 int buffer_pos = 0;
+
+char uart_receive_buffer[buffer_length];
+int uart_receive_pos =0;
+uint8_t rx_buffer[1]; // Buffer to hold one byte. This can be global or static for persistence.
+// 3. Initialize TCP
+  struct tcp_pcb *pcb;
+  struct tcp_pcb *send_pcb;
 //#ifdef __GNUC__
 //#define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
 //#else
@@ -68,9 +75,10 @@ static void MX_USART1_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 err_t tcp_recv_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
+
     if (p != NULL) {
         // Forward data to UART
-    	printf("TCP_Recieved char: \n\r");
+//    	printf("TCP_Recieved char: \n\r");
 //    	HAL_UART_Transmit(&huart1,p->payload, p->len, HAL_MAX_DELAY);
 
     	// read a line
@@ -78,7 +86,7 @@ err_t tcp_recv_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t e
     	char *data = (char *)p->payload;
     	        for (int i = 0; i < p->len; i++) {
     	            // Check if we've received a newline or if the buffer is full
-    	            if (data[i] == '\r' || buffer_pos == (MAX_LINE_LENGTH - 1)) {
+    	            if (data[i] == '\r' || buffer_pos == (buffer_length - 1)) {
     	                line_buffer[buffer_pos] = '\0'; // Null-terminate the string
 
     	                // Process the line
@@ -90,14 +98,14 @@ err_t tcp_recv_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t e
     	            }
     	        }
 
-    	// Echo the data back to the TCP sender
-    	        if (tcp_sndbuf(tpcb) > p->len) {
-    	            tcp_write(tpcb, p->payload, p->len, 1); // The '1' means copy the data.
-    	            tcp_output(tpcb); // Trigger the sending of the data.
-    	        } else {
-    	            // Handle case where there's not enough space in the buffer.
-    	            // Maybe close the connection or wait for some buffer to get free.
-    	        }
+//    	// Echo the data back to the TCP sender
+//    	        if (tcp_sndbuf(tpcb) > p->len) {
+//    	            tcp_write(tpcb, p->payload, p->len, 1); // The '1' means copy the data.
+//    	            tcp_output(tpcb); // Trigger the sending of the data.
+//    	        } else {
+//    	            // Handle case where there's not enough space in the buffer.
+//    	            // Maybe close the connection or wait for some buffer to get free.
+//    	        }
 
 
         tcp_recved(tpcb, p->len);
@@ -109,12 +117,13 @@ err_t tcp_recv_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t e
 }
 
 err_t accept_callback(void *arg, struct tcp_pcb *newpcb, err_t err) {
+	send_pcb = newpcb;
     tcp_recv(newpcb, tcp_recv_callback);
     return ERR_OK;
 }
 
 void process_line(char *line) {
-	printf("We got a Line: \n\r");
+//	printf("We got a Line: \n\r");
     // Process your line here. For example, send it to UART.
 	HAL_UART_Transmit(&huart1,line,buffer_pos, HAL_MAX_DELAY);
 }
@@ -151,18 +160,16 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART1_UART_Init();
-  printf("This is for TEST!\n\r");
   MX_LWIP_Init();
-//  HAL_Delay(100);
   /* USER CODE BEGIN 2 */
   //HAL_UART_Transmit(&huart1,fix_message,19, HAL_MAX_DELAY);
   /* tcp echo server Init */
-  // 3. Initialize TCP
-      struct tcp_pcb *pcb = tcp_new();
-      if (pcb == NULL) {
-          // Handle error
-          return -1;
-      }
+
+ pcb = tcp_new();
+   if (pcb == NULL) {
+ 	  // Handle error
+ 	  return -1;
+   }
 
       // 4. Start Listening for Incoming Connections
           tcp_bind(pcb, IP_ADDR_ANY, 1234); // Listening on port 1234
@@ -172,17 +179,18 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+
+HAL_UART_Receive_IT(&huart1, rx_buffer, 1);
   while (1)
   {
+
+	  MX_LWIP_Process();
     /* USER CODE END WHILE */
-MX_LWIP_Process();
-/* check if any packet received */
 
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
 }
-
 
 /**
   * @brief System Clock Configuration
@@ -257,7 +265,9 @@ static void MX_USART1_UART_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART1_Init 2 */
-
+  __HAL_UART_ENABLE_IT(&huart1, UART_IT_RXNE);
+  HAL_NVIC_EnableIRQ(USART1_IRQn);
+  HAL_NVIC_SetPriority(USART1_IRQn, 0, 0);
   /* USER CODE END USART1_Init 2 */
 
 }
@@ -289,6 +299,50 @@ PUTCHAR_PROTOTYPE {
 	  return ch;
 
 }
+
+
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if(huart->Instance == USART1)
+    {
+        uint8_t data;
+        data = (uint8_t)(huart->Instance->DR & (uint8_t)0x00FF);
+
+        if (data == '\n' || uart_receive_pos == (buffer_length - 1)) {
+        	//uart_receive_buffer[uart_receive_pos++] = '\0'; // Null-terminate the string
+        	uart_receive_buffer[uart_receive_pos] = '\n'; //
+           	                // Process the line
+           	                process_uart_receive(uart_receive_buffer,send_pcb);
+           	             uart_receive_pos = 0; // Reset the buffer for the next line
+           	            } else {
+           	                // Otherwise, add the character to the buffer
+           	            	uart_receive_buffer[uart_receive_pos++] = data;
+           	            }
+
+        // Handle received data as needed
+        // For example, you can store it in a buffer or process it
+        HAL_UART_Receive_IT(&huart1, rx_buffer, 1);
+    }
+
+
+}
+
+
+
+void process_uart_receive(char *msg, struct tcp_pcb *upcb)
+{
+if (tcp_sndbuf(upcb) > uart_receive_pos) {
+tcp_write(upcb, msg,uart_receive_pos, 1); // The '1' means copy the data
+tcp_output(upcb); // Trigger the sending of the data.
+}
+
+else
+{
+printf("TCP Buffer is full\n\r");
+}
+}
+
 /* USER CODE END 4 */
 
 /**
